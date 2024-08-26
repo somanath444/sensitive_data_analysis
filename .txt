@@ -1,0 +1,77 @@
+# creating data augmentation
+from scipy.stats import norm
+
+n_input = 6  # number of previous time stamps
+n_features = len(df_model.columns)  # number of features/counts per case types
+epochs = 50
+batch_size = 1
+
+def augment_data(data, n_years_future):
+    mean = np.mean(data, axis=0)
+    std = np.std(data, axis=0)
+    augmented_data = np.concatenate([data, norm.rvs(loc=mean, scale=std, size=(n_years_future, data.shape[1]))], axis=0)
+    return augmented_data
+
+# Iterate over each unique state
+for state in states:
+    # Use boolean indexing to filter data for the current state
+    state_data = df_model[df_model.index.get_level_values('STATE/UT') == state]
+    
+    # Check if state_data is empty or not
+    if state_data.empty:
+        print(f"No data found for state {state}")
+        continue
+
+    # Data Augmentation
+    n_years_future = 15
+    augmented_cases = augment_data(state_data.values, n_years_future=n_years_future)
+
+    # Check dimensions of augmented_cases
+    print("Augmented cases shape:", augmented_cases.shape)
+
+    # Preparing DataFrame for LSTM
+    df_aug = pd.DataFrame(augmented_cases, columns=state_data.columns)
+    df_aug.index = pd.date_range(start='1999', periods=len(augmented_cases), freq='A')
+
+    # Check DataFrame creation
+    print("DataFrame created with shape:", df_aug.shape)
+    print("Columns:", df_aug.columns)
+
+    # Scaling the data
+    scalar = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scalar.fit_transform(df_aug)
+
+    # Define the LSTM Model
+    model = Sequential()
+    model.add(LSTM(units=50, activation='relu', input_shape=(n_input, n_features)))
+    model.add(Dense(n_features))
+    model.compile(optimizer='adam', loss='mse')
+
+    # Create Time Series Generator
+    generator = TimeseriesGenerator(scaled_data, scaled_data, length=n_input, batch_size=batch_size)
+
+    # Callbacks for EarlyStopping
+    earlystopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
+    # Fit the model
+    history = model.fit(generator, epochs=epochs, validation_data=generator, callbacks=earlystopping, verbose=1)
+
+    # Predict and inverse transform results
+    predictions = model.predict(generator)
+    predictions = scalar.inverse_transform(predictions)
+
+    # Evaluating the model
+    y_true = df_aug.values[n_input:]
+    mse = mean_squared_error(y_true, predictions)
+    print(f'Mean Squared Error for {state}: {mse}')
+
+    # Plotting results
+    plt.figure(figsize=(14, 8))
+    plt.plot(df_aug.index[n_input:], y_true[:, 0], label='True Data')
+    plt.plot(df_aug.index[n_input:], predictions[:, 0], label='Predictions', linestyle='--')
+    plt.xlabel('Year')
+    plt.ylabel('Number of Cases')
+    plt.title(f'Predictions vs True Data for {state}')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
